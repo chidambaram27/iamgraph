@@ -1,0 +1,49 @@
+services:
+  falkordb:
+    image: falkordb/falkordb:latest
+    container_name: iam-graph-falkordb
+    ports:
+      - "6379:6379"   # Redis protocol (falkordb-py client)
+      - "3000:3000"   # FalkorDB Browser
+    volumes:
+      - falkordb-data:/var/lib/falkordb/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  # docker compose run --rm app iamgraph ask "…"   (loads the synthetic data, then runs the command)
+  app:
+    build: .
+    profiles: ["app"]
+    depends_on:
+      falkordb:
+        condition: service_healthy
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      FALKORDB_HOST: falkordb
+      FALKORDB_PORT: "6379"
+
+  # docker compose --profile app up web   → http://localhost:8000
+  web:
+    build: .
+    profiles: ["app"]
+    command: ["iamgraph", "web", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    depends_on:
+      falkordb:
+        condition: service_healthy
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      FALKORDB_HOST: falkordb
+      FALKORDB_PORT: "6379"
+
+volumes:
+  falkordb-data:

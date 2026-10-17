@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22><circle cx=%228%22 cy=%228%22 r=%227%22 fill=%22%234f8cff%22/></svg>">
+<title>iamgraph — IAM + K8s attack paths on FalkorDB</title>
+<script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+<style>
+  :root { --bg:#0f1117; --panel:#171a23; --line:#2a2f3d; --text:#d8dbe3; --dim:#8a90a2; --accent:#4f8cff;
+          --red:#ff5c6c; --green:#3ecf8e; --yellow:#f5c451; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.45 system-ui, sans-serif; background:var(--bg); color:var(--text);
+         display:grid; grid-template-columns: 440px 1fr; height:100vh; }
+  aside { background:var(--panel); border-right:1px solid var(--line); display:flex; flex-direction:column; min-height:0; }
+  header { padding:14px 16px 8px; }
+  header h1 { margin:0; font-size:17px; } header p { margin:2px 0 0; color:var(--dim); font-size:12px; }
+  nav { display:flex; border-bottom:1px solid var(--line); padding:0 8px; }
+  nav button { background:none; border:0; color:var(--dim); padding:9px 12px; cursor:pointer; font-size:13px;
+               border-bottom:2px solid transparent; }
+  nav button.on { color:var(--text); border-color:var(--accent); }
+  section { display:none; padding:14px 16px; overflow:auto; flex:1; }
+  section.on { display:block; }
+  label { display:block; color:var(--dim); font-size:12px; margin:8px 0 3px; }
+  input, textarea { width:100%; background:var(--bg); border:1px solid var(--line); color:var(--text);
+                    padding:7px 9px; border-radius:6px; font:inherit; }
+  .row { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; }
+  .btn { background:var(--accent); color:#fff; border:0; padding:7px 13px; border-radius:6px; cursor:pointer; font:inherit; }
+  .btn.ghost { background:none; border:1px solid var(--line); color:var(--text); }
+  .btn:disabled { opacity:.5; cursor:wait; }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+  .chip { font-size:12px; padding:3px 8px; border-radius:12px; border:1px solid var(--line); cursor:pointer; color:var(--dim); }
+  .chip:hover { color:var(--text); border-color:var(--accent); }
+  .card { border:1px solid var(--line); border-radius:8px; padding:10px 12px; margin-top:12px; background:#12151d; }
+  .card h3 { margin:0 0 6px; font-size:13px; }
+  .hop { font-family:ui-monospace, monospace; font-size:12px; padding:2px 0; }
+  .hop .rel { color:var(--dim); }
+  .ok { color:var(--green); } .bad { color:var(--red); } .dim { color:var(--dim); }
+  .sens { color:var(--red); font-size:11px; margin-left:4px; }
+  pre { background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:8px; overflow:auto;
+        font-size:11.5px; margin:6px 0 0; white-space:pre; }
+  pre .add { color:var(--green); } pre .del { color:var(--red); } pre .hdr { color:var(--dim); }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; margin-top:6px; }
+  td, th { text-align:left; padding:4px 6px; border-bottom:1px solid var(--line); }
+  th { color:var(--dim); font-weight:500; }
+  tr.click { cursor:pointer; } tr.click:hover { background:#1c2030; }
+  .answer :is(p, ul, ol) { margin:6px 0; } .answer code { background:var(--bg); padding:1px 4px; border-radius:4px; }
+  .tool { font-family:ui-monospace, monospace; font-size:12px; color:var(--dim); margin-top:4px; }
+  main { position:relative; min-width:0; }
+  #net { position:absolute; inset:0; }
+  #legend { position:absolute; left:12px; top:12px; background:rgba(23,26,35,.92); border:1px solid var(--line);
+            border-radius:8px; padding:8px 10px; font-size:12px; display:flex; flex-wrap:wrap; gap:4px 12px; max-width:560px; }
+  #legend span::before { content:""; display:inline-block; width:10px; height:10px; border-radius:50%;
+                         margin-right:5px; vertical-align:-1px; background:var(--c); }
+  #status { position:absolute; right:12px; top:12px; display:flex; gap:8px; }
+  #info { position:absolute; right:12px; bottom:12px; background:rgba(23,26,35,.92); border:1px solid var(--line);
+          border-radius:8px; padding:8px 10px; font-size:12px; max-width:340px; display:none; }
+</style>
+</head>
+<body>
+<aside>
+  <header>
+    <h1>iamgraph</h1>
+    <p>AWS IAM + Kubernetes RBAC in one FalkorDB graph · attack paths · verified least-privilege fixes</p>
+  </header>
+  <nav>
+    <button data-tab="path" class="on">Path &amp; fix</button>
+    <button data-tab="who">Who can reach</button>
+    <button data-tab="scan">Scan</button>
+    <button data-tab="ask">Ask agent</button>
+  </nav>
+
+  <section id="tab-path" class="on">
+    <label>Source (user, role, pod, service account, or ns/name)</label>
+    <input id="src" value="dev-intern">
+    <label>Target resource</label>
+    <input id="dst" value="prod-db-credentials">
+    <div class="chips" id="planted"></div>
+    <div class="row">
+      <button class="btn" id="go-path">Find path</button>
+      <button class="btn ghost" id="go-fix">Propose fix</button>
+      <button class="btn ghost" id="go-blast">Blast radius</button>
+    </div>
+    <div id="out-path"></div>
+  </section>
+
+  <section id="tab-who">
+    <label>Resource</label>
+    <input id="res" value="prod-db-credentials">
+    <div class="row"><button class="btn" id="go-who">Who can reach it?</button></div>
+    <div id="out-who"></div>
+  </section>
+
+  <section id="tab-scan">
+    <p class="dim">Non-admin users and pods that reach a sensitive resource outside their declared access, plus
+      betweenness-centrality chokepoints.</p>
+    <div class="row"><button class="btn" id="go-scan">Run scan</button></div>
+    <div id="out-scan"></div>
+  </section>
+
+  <section id="tab-ask">
+    <label>Question</label>
+    <textarea id="q" rows="3">Can dev-intern reach prod-db-credentials? If so, fix it.</textarea>
+    <div class="chips" id="golden"></div>
+    <div class="row"><button class="btn" id="go-ask">Ask</button></div>
+    <div id="out-ask"></div>
+  </section>
+</aside>
+
+<main>
+  <div id="net"></div>
+  <div id="status"><button class="btn ghost" id="reset">Reset view</button></div>
+  <div id="legend"></div>
+  <div id="info"></div>
+</main>
+
+<script>
+const COLORS = { User:"#4fc3f7", Group:"#5c7cfa", Role:"#c77dff", Policy:"#f5c451", Resource:"#3ecf8e",
+                 Pod:"#4f8cff", ServiceAccount:"#22d3ee", K8sRole:"#e879f9" };
+const SHAPES = { User:"dot", Group:"dot", Role:"diamond", Policy:"square", Resource:"star",
+                 Pod:"hexagon", ServiceAccount:"triangle", K8sRole:"diamond" };
+const PLANTED = [["dev-intern","prod-db-credentials"],["data-analyst","customer-pii"],["contractor-bob","prod-backups"],
+                 ["support-jane","payment-api-key"],["web-frontend","prod-db-credentials"],["ci-runner","stripe-webhook-key"]];
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+let net, nodes, edges, base = {};
+
+async function api(url, opts) {
+  const r = await fetch(url, opts);
+  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+  return r.json();
+}
+
+async function busy(btn, fn) {
+  btn.disabled = true;
+  try { await fn(); } catch (e) { alert(e.message); } finally { btn.disabled = false; }
+}
+
+// --- graph ---------------------------------------------------------------------
+function nodeStyle(n) {
+  const c = COLORS[n.label] || "#888";
+  return { color: { background: c, border: n.sensitive ? "#ff5c6c" : c, highlight: { background: c, border: "#fff" } },
+           borderWidth: n.sensitive ? 3 : 1, opacity: 1, size: n.label === "Resource" ? 14 : 11,
+           font: { color: "#d8dbe3", size: 11 } };
+}
+const edgeStyle = () => ({ color: { color: "#3a4052", opacity: .7 }, width: 1, dashes: false, label: " " });
+const EDGE_FONT = { strokeWidth: 4, strokeColor: "#0f1117", align: "horizontal" };
+
+async function loadGraph() {
+  const g = await api("/api/graph");
+  nodes = new vis.DataSet(g.nodes.map(n => {
+    const s = { id: n.uid, label: n.namespace ? `${n.namespace}/${n.name}` : n.name, shape: SHAPES[n.label] || "dot",
+                title: `${n.label}: ${n.name}${n.sensitive ? " (sensitive)" : ""}${n.full_admin ? " (full admin)" : ""}`,
+                raw: n, ...nodeStyle(n) };
+    base[n.uid] = s; return s;
+  }));
+  edges = new vis.DataSet(g.edges.map(e => ({ id: e.id, from: e.from, to: e.to, raw: e,
+    title: e.type + (e.kind ? ` (${e.kind})` : "") + (e.sid ? ` Sid=${e.sid}` : ""), arrows: "to", ...edgeStyle() })));
+  net = new vis.Network($("net"), { nodes, edges }, {
+    physics: { solver: "forceAtlas2Based", forceAtlas2Based: { gravitationalConstant: -40, springLength: 70, avoidOverlap: .6 },
+               stabilization: { iterations: 250 } },
+    interaction: { hover: true, tooltipDelay: 120 }, edges: { smooth: { type: "continuous" }, arrows: { to: { scaleFactor: .5 } } },
+  });
+  net.once("stabilizationIterationsDone", () => net.setOptions({ physics: false }));
+  net.on("click", p => {
+    const id = p.nodes[0];
+    if (!id) { $("info").style.display = "none"; return; }
+    const n = nodes.get(id).raw;
+    $("info").style.display = "block";
+    $("info").innerHTML = `<b>${esc(n.label)}</b> ${esc(n.namespace ? n.namespace + "/" : "")}${esc(n.name)}<br>
+      <span class="dim">${esc(n.uid)}</span><div class="row">
+      ${n.label === "Resource" ? `<button class="btn ghost" onclick="useTarget('${esc(n.namespace ? n.namespace + "/" + n.name : n.name)}')">Use as target</button>`
+                               : `<button class="btn ghost" onclick="useSource('${esc(n.namespace ? n.namespace + "/" + n.name : n.name)}')">Use as source</button>`}</div>`;
+  });
+  $("legend").innerHTML = Object.entries(COLORS).map(([l, c]) => `<span style="--c:${c}">${l}</span>`).join("")
+    + `<span style="--c:#ff5c6c">sensitive / cut edge</span>`;
+}
+
+function resetHighlight() {
+  nodes.update(Object.values(base).map(n => ({ id: n.id, ...nodeStyle(n.raw) })));
+  edges.update(edges.get().map(e => ({ id: e.id, ...edgeStyle() })));
+}
+
+function highlight(paths, cutIds = []) {
+  const ns = new Set(), es = new Set(), cut = new Set(cutIds);
+  paths.forEach(p => { p.nodes.forEach(n => ns.add(n.uid)); p.edges.forEach(e => es.add(e.id)); });
+  nodes.update(Object.values(base).map(n => ns.has(n.id) ? { id: n.id, ...nodeStyle(n.raw), size: 20, font: { color: "#fff", size: 14, bold: true } }
+    : { id: n.id, color: { background: "#232733", border: "#232733" }, font: { color: "#3a4052", size: 10 } }));
+  edges.update(edges.get().map(e => cut.has(e.id) ? { id: e.id, color: { color: "#ff5c6c", opacity: 1 }, width: 4, dashes: [8, 6], label: "✂ cut",
+                                                       font: { ...EDGE_FONT, color: "#ff5c6c", size: 13, bold: true } }
+    : es.has(e.id) ? { id: e.id, color: { color: "#fff", opacity: 1 }, width: 2.5, label: e.raw.type, font: { ...EDGE_FONT, color: "#aab0c0", size: 10 } }
+    : { id: e.id, color: { color: "#1e222c", opacity: .4 }, width: 1, label: " " }));
+  if (ns.size) net.fit({ nodes: [...ns], animation: { duration: 500 } });
+}
+
+function focusNodes(uids) {
+  const keep = new Set(uids);
+  nodes.update(Object.values(base).map(n => keep.has(n.id) ? { id: n.id, ...nodeStyle(n.raw), size: 18, font: { color: "#fff", size: 13 } }
+    : { id: n.id, color: { background: "#232733", border: "#232733" }, font: { color: "#3a4052", size: 10 } }));
+  edges.update(edges.get().map(e => ({ id: e.id, color: { color: "#1e222c", opacity: .4 }, width: 1, label: " " })));
+  if (keep.size) net.fit({ nodes: [...keep], animation: { duration: 500 } });
+}
+const uidOf = (name, label) => {
+  const [ns, short] = name.includes("/") ? name.split("/") : [null, name];
+  return Object.values(base).find(n => n.raw.name === short && (!label || n.raw.label === label)
+                                       && (!ns || n.raw.namespace === ns))?.id;
+};
+
+// --- rendering -------------------------------------------------------------------
+function hops(p) {
+  const n0 = p.nodes[0];
+  let h = `<div class="hop"><b style="color:${COLORS[n0.label]}">${esc(n0.label)}</b> ${esc(n0.name)}</div>`;
+  p.edges.forEach((e, i) => {
+    const n = p.nodes[i + 1];
+    const rel = e.type + (e.kind ? `/${e.kind}` : "") + (e.sid ? ` [${e.sid}]` : "");
+    h += `<div class="hop"><span class="rel">&nbsp;&nbsp;└─${esc(rel)}→</span> <b style="color:${COLORS[n.label]}">${esc(n.label)}</b>
+          ${esc(n.name)}${n.sensitive ? '<span class="sens">SENSITIVE</span>' : ""}</div>`;
+  });
+  return h;
+}
+
+function diffHtml(d) {
+  return d.split("\n").map(l => {
+    const c = l.startsWith("+++") || l.startsWith("---") || l.startsWith("@@") ? "hdr" : l.startsWith("+") ? "add" : l.startsWith("-") ? "del" : "";
+    return `<span class="${c}">${esc(l)}</span>`;
+  }).join("\n");
+}
+
+function renderPath(r) {
+  if (r.error) return `<div class="card bad">${esc(r.error)}</div>`;
+  if (!r.reachable) return `<div class="card ok">No path from ${esc(r.source)} to ${esc(r.target)}.</div>`;
+  return `<div class="card"><h3 class="bad">${esc(r.source)} can reach ${esc(r.target)} · ${r.paths.length} path(s)</h3>`
+    + r.paths.map((p, i) => `<div class="dim" style="margin-top:6px">Path ${i + 1} · ${p.hops} hops</div>${hops(p)}`).join("") + "</div>";
+}
+
+function renderFix(r) {
+  if (r.error) return `<div class="card bad">${esc(r.error)}</div>`;
+  if (r.already_safe) return `<div class="card ok">No path — nothing to fix.</div>`;
+  return r.fixes.map((f, i) => `<div class="card"><h3>Fix #${i + 1}: ${esc(f.summary)}</h3>
+      <div>Cuts <span class="bad">${esc(f.cuts_edge)}</span></div>
+      <div>Exposures removed: <b>${f.exposures_removed}</b> · Legit access lost:
+        <b class="${f.collateral.length ? "bad" : "ok"}">${f.collateral.length ? esc(f.collateral.join(", ")) : "none"}</b></div>
+      ${f.alternatives_considered.length ? `<details><summary class="dim">${f.alternatives_considered.length} alternatives considered</summary>
+        <table><tr><th>kind</th><th>edge</th><th>exp.</th><th>collat.</th></tr>${f.alternatives_considered.map(a =>
+          `<tr><td>${esc(a.kind)}</td><td>${esc(a.edge)}</td><td>${a.exposures_removed}</td><td>${a.collateral_weight}</td></tr>`).join("")}</table></details>` : ""}
+      ${f.diff ? `<pre>${diffHtml(f.diff)}</pre>` : ""}
+      ${f.command ? `<pre>${esc(f.command)}</pre>` : ""}</div>`).join("")
+    + `<div class="card ${r.verified_no_path_after_fix ? "ok" : "bad"}">${r.verified_no_path_after_fix
+        ? "✔ Verified: path is gone on a simulated copy of the graph (live graph untouched)." : "✘ Path still exists after fixes."}</div>`;
+}
+
+function renderWho(r) {
+  if (r.error) return `<div class="card bad">${esc(r.error)}</div>`;
+  return `<div class="card"><h3>${r.unexpected_count} unexpected of ${r.principals.length} actors</h3>
+    <table><tr><th>actor</th><th>type</th><th>hops</th><th>access</th></tr>${r.principals.map(p =>
+      `<tr class="click" data-src="${esc(p.name)}"><td style="color:${COLORS[p.type]}">${esc(p.name)}</td><td>${esc(p.type)}</td><td>${p.hops}</td>
+       <td class="${p.expected ? "ok" : "bad"}">${p.expected ? `expected (${p.admin ? "admin" : "declared"})` : "UNEXPECTED"}</td></tr>`).join("")}</table>
+    <div class="dim" style="margin-top:6px">Click a row to trace its path.</div></div>`;
+}
+
+function renderScan(r) {
+  return `<div class="card"><h3>${r.exposures.length} exposures</h3>
+    <table><tr><th>principal</th><th>resource</th><th>hops</th></tr>${r.exposures.map(e =>
+      `<tr class="click" data-src="${esc(e.source)}" data-dst="${esc(e.target)}"><td style="color:${COLORS[e.source_type]}">${esc(e.source)}</td>
+       <td>${esc(e.target)}</td><td>${e.hops}</td></tr>`).join("")}</table></div>
+    <div class="card"><h3>Chokepoints (betweenness)</h3><table><tr><th>name</th><th>type</th><th>score</th></tr>${r.chokepoints.map(c =>
+      `<tr class="click" data-focus="${esc(c.name)}"><td style="color:${COLORS[c.type]}">${esc(c.name)}</td><td>${esc(c.type)}</td><td>${c.betweenness}</td></tr>`).join("")}</table></div>
+    <div class="card"><h3>Most exposed resources</h3><table><tr><th>resource</th><th>non-admin users</th></tr>${r.most_exposed_resources.map(m =>
+      `<tr class="click" data-res="${esc(m.resource)}"><td>${esc(m.resource)}</td><td>${m.non_admin_users_with_access}</td></tr>`).join("")}</table></div>`;
+}
+
+function renderBlast(r) {
+  if (r.error) return `<div class="card bad">${esc(r.error)}</div>`;
+  return `<div class="card"><h3>${esc(r.principal)}: ${r.resources.length} resources (${r.sensitive_count} sensitive), ${r.roles_assumable.length} roles</h3>
+    <div class="dim">Roles</div><div>${r.roles_assumable.map(esc).join(", ") || "none"}</div>
+    <div class="dim" style="margin-top:6px">Resources</div><div>${r.resources.map(x =>
+      `${esc(x.name)}${x.sensitive ? '<span class="sens">SENSITIVE</span>' : ""}`).join(", ") || "none"}</div></div>`;
+}
+
+// --- actions ----------------------------------------------------------------------
+const q = (u, p) => `${u}?${new URLSearchParams(p)}`;
+const pair = () => ({ source: $("src").value.trim(), target: $("dst").value.trim() });
+
+async function doPath() {
+  const r = await api(q("/api/path", pair()));
+  $("out-path").innerHTML = renderPath(r);
+  r.paths ? highlight(r.paths) : resetHighlight();
+  return r;
+}
+
+async function doFix() {
+  const [p, f] = await Promise.all([api(q("/api/path", pair())), api(q("/api/fix", pair()))]);
+  $("out-path").innerHTML = renderPath(p) + renderFix(f);
+  if (p.paths) highlight(p.paths, (f.fixes || []).flatMap(x => x.cut_edge_ids));
+}
+
+async function doBlast() {
+  const r = await api(q("/api/blast", { principal: $("src").value.trim() }));
+  $("out-path").innerHTML = renderBlast(r);
+  r.error ? resetHighlight() : focusNodes([uidOf($("src").value.trim()), ...r.roles_assumable.map(n => uidOf(n, "Role")),
+                                           ...r.resources.map(x => uidOf(x.name, "Resource"))].filter(Boolean));
+}
+
+function showTab(t) {
+  document.querySelectorAll("nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === t));
+  document.querySelectorAll("aside section").forEach(s => s.classList.toggle("on", s.id === `tab-${t}`));
+}
+window.useSource = s => { $("src").value = s; showTab("path"); };
+window.useTarget = s => { $("dst").value = s; $("res").value = s; showTab("path"); };
+
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => showTab(b.dataset.tab));
+$("go-path").onclick = e => busy(e.target, doPath);
+$("go-fix").onclick = e => busy(e.target, doFix);
+$("go-blast").onclick = e => busy(e.target, doBlast);
+$("reset").onclick = () => { resetHighlight(); net.fit({ animation: { duration: 400 } }); };
+$("go-who").onclick = e => busy(e.target, async () => {
+  const r = await api(q("/api/who", { resource: $("res").value.trim() }));
+  $("out-who").innerHTML = renderWho(r);
+  r.error ? resetHighlight() : focusNodes([uidOf($("res").value.trim(), "Resource"), ...r.principals.map(p => uidOf(p.name, p.type))].filter(Boolean));
+});
+$("go-scan").onclick = e => busy(e.target, async () => {
+  const r = await api("/api/scan");
+  $("out-scan").innerHTML = renderScan(r);
+  focusNodes([...new Set(r.exposures.flatMap(x => [uidOf(x.source, x.source_type), uidOf(x.target, "Resource")]))].filter(Boolean));
+});
+$("go-ask").onclick = e => busy(e.target, async () => {
+  $("out-ask").innerHTML = `<div class="card dim">Thinking… (the agent is calling graph tools)</div>`;
+  const r = await api("/api/ask", { method: "POST", headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({ question: $("q").value }) });
+  const tools = r.tool_calls.map(c => `<div class="tool">→ ${esc(c.tool)}(${esc(Object.entries(c.args).map(([k, v]) => `${k}=${v}`).join(", "))})</div>`).join("");
+  let html = `<div class="card"><h3>Tool calls</h3>${tools || '<span class="dim">none</span>'}</div>`;
+  html += r.error ? `<div class="card bad">${esc(r.error)}</div>` : `<div class="card answer">${marked.parse(r.answer)}</div>`;
+  const path = r.tool_calls.find(c => c.tool === "find_attack_path" && c.result.paths?.length);
+  const fix = r.tool_calls.find(c => c.tool === "propose_fix" && c.result.fixes);
+  if (fix) html += renderFix(fix.result);
+  $("out-ask").innerHTML = html;
+  path ? highlight(path.result.paths, fix ? fix.result.fixes.flatMap(x => x.cut_edge_ids) : []) : resetHighlight();
+});
+
+document.addEventListener("click", e => {
+  const tr = e.target.closest("tr.click");
+  if (!tr) return;
+  if (tr.dataset.focus) {
+    const id = Object.values(base).find(n => n.raw.name === tr.dataset.focus)?.id;
+    if (id) { resetHighlight(); net.selectNodes([id]); net.focus(id, { scale: 1.4, animation: { duration: 500 } }); }
+    return;
+  }
+  if (tr.dataset.res) { $("res").value = tr.dataset.res; showTab("who"); $("go-who").click(); return; }
+  $("src").value = tr.dataset.src;
+  $("dst").value = tr.dataset.dst || $("res").value;
+  showTab("path"); busy($("go-path"), doPath);
+});
+
+$("planted").innerHTML = PLANTED.map(([s, t]) => `<span class="chip" data-s="${s}" data-t="${t}">${s} → ${t}</span>`).join("");
+$("planted").onclick = e => { const c = e.target.closest(".chip"); if (!c) return;
+  $("src").value = c.dataset.s; $("dst").value = c.dataset.t; busy($("go-path"), doPath); };
+api("/api/golden").then(g => {
+  $("golden").innerHTML = g.map(x => `<span class="chip">${esc(x)}</span>`).join("");
+  $("golden").onclick = e => { const c = e.target.closest(".chip"); if (c) $("q").value = c.textContent; };
+});
+loadGraph().catch(e => alert("Could not load graph: " + e.message + "\nRun `iamgraph load` first."));
+</script>
+</body>
+</html>
