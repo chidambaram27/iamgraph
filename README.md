@@ -6,7 +6,7 @@ An agent that loads cloud IAM (and Kubernetes RBAC) into a FalkorDB graph, finds
 privilege-escalation paths, proposes the least-privilege fix that cuts each path, and shows
 the traced path as evidence.
 
-**Demo video:** [`docs/video/iamgraph-demo.mp4`](docs/video/iamgraph-demo.mp4)
+**Demo video:** [watch in the browser](https://chidambaram27.github.io/iamgraph/video/) · [`docs/video/iamgraph-demo.mp4`](docs/video/iamgraph-demo.mp4)
 ([direct download](https://github.com/chidambaram27/iamgraph/raw/main/docs/video/iamgraph-demo.mp4))
 
 ## Status
@@ -296,7 +296,7 @@ flowchart LR
 
 ## Demo
 
-Track: **01 · Agents That Act on Connected Data**. **Video:** [`docs/video/iamgraph-demo.mp4`](docs/video/iamgraph-demo.mp4)
+Track: **01 · Agents That Act on Connected Data**. **Video:** [watch in the browser](https://chidambaram27.github.io/iamgraph/video/) ([mp4](docs/video/iamgraph-demo.mp4))
 (web-UI tour with subtitles, recorded with Recordly and `scripts/demo_tour.mjs`).
 
 The synthetic account and cluster include 6 planted attack paths among benign noise
